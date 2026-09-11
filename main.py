@@ -58,6 +58,10 @@ def init_db():
       user_id INTEGER NOT NULL,
       created_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS admin_sessions(
+      token TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS likes(
       liker_id INTEGER NOT NULL,
       liked_id INTEGER NOT NULL,
@@ -127,6 +131,11 @@ class Login(BaseModel):
     password: str
 
 
+class AdminLogin(BaseModel):
+    email: str
+    password: str
+
+
 class ProfileUpdate(BaseModel):
     name: Optional[str] = None
     age: Optional[int] = None
@@ -160,6 +169,20 @@ def auth_user(authorization: Optional[str]):
     return r['user_id']
 
 
+def auth_admin(authorization: Optional[str]):
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(401, 'Admin login required')
+    token = authorization[7:]
+    c = conn()
+    cur = c.cursor()
+    cur.execute('SELECT token FROM admin_sessions WHERE token=?', (token,))
+    r = cur.fetchone()
+    c.close()
+    if not r:
+        raise HTTPException(401, 'Admin session expired')
+    return True
+
+
 def public_user(r):
     return {
         k: r[k]
@@ -179,6 +202,70 @@ def health():
 @app.get('/')
 def home():
     return FileResponse(os.path.join(BASE, 'static', 'index.html'))
+
+
+@app.get('/admin')
+def admin_page():
+    return FileResponse(os.path.join(BASE, 'static', 'admin.html'))
+
+
+@app.post('/api/admin/login')
+def admin_login(data: AdminLogin):
+    admin_email = os.environ.get('ADMIN_EMAIL', '').strip().lower()
+    admin_password = os.environ.get('ADMIN_PASSWORD', '')
+    if not admin_email or not admin_password:
+        raise HTTPException(503, 'Admin access has not been configured')
+
+    email_ok = secrets.compare_digest(data.email.strip().lower(), admin_email)
+    password_ok = secrets.compare_digest(data.password, admin_password)
+    if not (email_ok and password_ok):
+        raise HTTPException(401, 'Incorrect admin email or password')
+
+    token = secrets.token_urlsafe(40)
+    c = conn()
+    c.execute('INSERT INTO admin_sessions(token,created_at) VALUES(?,?)', (token, datetime.utcnow().isoformat()))
+    c.commit()
+    c.close()
+    return {'token': token}
+
+
+@app.get('/api/admin/stats')
+def admin_stats(authorization: Optional[str] = Header(None)):
+    auth_admin(authorization)
+    c = conn()
+    cur = c.cursor()
+    cur.execute('SELECT COUNT(*) AS n FROM users')
+    users = cur.fetchone()['n']
+    cur.execute('SELECT COUNT(*) AS n FROM likes')
+    likes = cur.fetchone()['n']
+    cur.execute('''SELECT COUNT(*) AS n FROM likes a
+                   JOIN likes b ON a.liker_id=b.liked_id AND a.liked_id=b.liker_id
+                   WHERE a.liker_id < a.liked_id''')
+    matches = cur.fetchone()['n']
+    cur.execute('SELECT COUNT(*) AS n FROM messages')
+    messages = cur.fetchone()['n']
+    c.close()
+    return {'users': users, 'likes': likes, 'matches': matches, 'messages': messages}
+
+
+@app.get('/api/admin/users')
+def admin_users(authorization: Optional[str] = Header(None)):
+    auth_admin(authorization)
+    c = conn()
+    cur = c.cursor()
+    cur.execute('''
+        SELECT
+          u.id, u.name, u.email, u.age, u.location, u.handicap,
+          u.gender, u.interested_in, u.looking_for, u.golf_style,
+          u.home_club, u.verified, u.created_at,
+          (SELECT COUNT(*) FROM likes l WHERE l.liker_id=u.id) AS likes_sent,
+          (SELECT COUNT(*) FROM likes l WHERE l.liked_id=u.id) AS likes_received
+        FROM users u
+        ORDER BY datetime(u.created_at) DESC, u.id DESC
+    ''')
+    out = [dict(row) for row in cur.fetchall()]
+    c.close()
+    return out
 
 
 @app.post('/api/register')
