@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
-import sqlite3, hashlib, secrets, os
+import sqlite3, hashlib, secrets, os, math
 from datetime import datetime
 from photo_uploads import router as photo_router
 
@@ -18,7 +18,8 @@ def add_column(c,name,definition):
  if name not in cols: c.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
 def init_db():
  c=conn(); c.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,name TEXT NOT NULL,age INTEGER NOT NULL,location TEXT NOT NULL,handicap REAL,gender TEXT DEFAULT '',interested_in TEXT DEFAULT '',looking_for TEXT DEFAULT 'Dating and seeing where it goes',bio TEXT DEFAULT '',golf_style TEXT DEFAULT 'Social golfer',home_club TEXT DEFAULT '',photo TEXT DEFAULT '',verified INTEGER DEFAULT 0,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS admin_sessions(token TEXT PRIMARY KEY,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS likes(liker_id INTEGER NOT NULL,liked_id INTEGER NOT NULL,created_at TEXT NOT NULL,UNIQUE(liker_id,liked_id)); CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,sender_id INTEGER NOT NULL,receiver_id INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);''')
- add_column(c,'min_age','INTEGER DEFAULT 18'); add_column(c,'max_age','INTEGER DEFAULT 80'); add_column(c,'search_radius','INTEGER DEFAULT 50'); add_column(c,'onboarding_complete','INTEGER DEFAULT 0'); c.commit(); c.close()
+ for n,d in [('min_age','INTEGER DEFAULT 18'),('max_age','INTEGER DEFAULT 80'),('search_radius','INTEGER DEFAULT 50'),('onboarding_complete','INTEGER DEFAULT 0'),('latitude','REAL'),('longitude','REAL')]: add_column(c,n,d)
+ c.commit(); c.close()
 def remove_old_demo_accounts():
  demos=('aoife@example.com','david@example.com','sarah@example.com','mark@example.com'); c=conn(); q=','.join('?'*len(demos)); ids=[r['id'] for r in c.execute(f'SELECT id FROM users WHERE email IN ({q})',demos).fetchall()]
  if ids:
@@ -29,7 +30,7 @@ class Register(BaseModel): email:str; password:str; name:str; age:int; location:
 class Login(BaseModel): email:str; password:str
 class AdminLogin(BaseModel): email:str; password:str
 class ProfileUpdate(BaseModel):
- name:Optional[str]=None; age:Optional[int]=None; location:Optional[str]=None; handicap:Optional[float]=None; gender:Optional[str]=None; interested_in:Optional[str]=None; looking_for:Optional[str]=None; bio:Optional[str]=None; golf_style:Optional[str]=None; home_club:Optional[str]=None; photo:Optional[str]=None; min_age:Optional[int]=None; max_age:Optional[int]=None; search_radius:Optional[int]=None; onboarding_complete:Optional[int]=None
+ name:Optional[str]=None; age:Optional[int]=None; location:Optional[str]=None; handicap:Optional[float]=None; gender:Optional[str]=None; interested_in:Optional[str]=None; looking_for:Optional[str]=None; bio:Optional[str]=None; golf_style:Optional[str]=None; home_club:Optional[str]=None; photo:Optional[str]=None; min_age:Optional[int]=None; max_age:Optional[int]=None; search_radius:Optional[int]=None; onboarding_complete:Optional[int]=None; latitude:Optional[float]=None; longitude:Optional[float]=None
 class MessageIn(BaseModel): receiver_id:int; body:str
 def auth_user(a):
  if not a or not a.startswith('Bearer '): raise HTTPException(401,'Please log in')
@@ -40,7 +41,14 @@ def auth_admin(a):
  if not a or not a.startswith('Bearer '): raise HTTPException(401,'Admin login required')
  c=conn(); r=c.execute('SELECT token FROM admin_sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
  if not r: raise HTTPException(401,'Admin session expired')
-def public_user(r): return {k:r[k] for k in ['id','name','age','location','handicap','gender','interested_in','looking_for','bio','golf_style','home_club','photo','verified','min_age','max_age','search_radius','onboarding_complete']}
+def public_user(r,distance=None):
+ out={k:r[k] for k in ['id','name','age','location','handicap','gender','interested_in','looking_for','bio','golf_style','home_club','photo','verified','min_age','max_age','search_radius','onboarding_complete']}
+ if distance is not None: out['distance_km']=round(distance)
+ return out
+def self_user(r):
+ out=public_user(r); out['has_location_coordinates']=r['latitude'] is not None and r['longitude'] is not None; return out
+def distance_km(a,b,c,d):
+ R=6371.0; p1=math.radians(a); p2=math.radians(c); dp=math.radians(c-a); dl=math.radians(d-b); x=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2; return R*2*math.atan2(math.sqrt(x),math.sqrt(1-x))
 @app.get('/health')
 def health(): return {'status':'ok'}
 @app.get('/')
@@ -75,12 +83,14 @@ def login(d:Login):
  t=secrets.token_urlsafe(32); c.execute('INSERT INTO sessions VALUES(?,?,?)',(t,u['id'],datetime.utcnow().isoformat())); c.commit(); c.close(); return {'token':t,'user_id':u['id']}
 @app.get('/api/me')
 def me(authorization:Optional[str]=Header(None)):
- uid=auth_user(authorization); c=conn(); u=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone(); c.close(); return public_user(u)
+ uid=auth_user(authorization); c=conn(); u=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone(); c.close(); return self_user(u)
 @app.put('/api/me')
 def update_me(d:ProfileUpdate,authorization:Optional[str]=Header(None)):
  uid=auth_user(authorization); data=d.model_dump(exclude_unset=True)
  if 'min_age' in data and data['min_age'] is not None and not 18<=data['min_age']<=99: raise HTTPException(400,'Minimum age must be between 18 and 99')
  if 'max_age' in data and data['max_age'] is not None and not 18<=data['max_age']<=99: raise HTTPException(400,'Maximum age must be between 18 and 99')
+ if data.get('latitude') is not None and not -90<=data['latitude']<=90: raise HTTPException(400,'Invalid latitude')
+ if data.get('longitude') is not None and not -180<=data['longitude']<=180: raise HTTPException(400,'Invalid longitude')
  fields=[]; vals=[]
  for k,v in data.items(): fields.append(f'{k}=?'); vals.append(v)
  if fields: vals.append(uid); c=conn(); c.execute('UPDATE users SET '+','.join(fields)+' WHERE id=?',vals); c.commit(); c.close()
@@ -90,12 +100,15 @@ def gender_matches(wanted,gender):
  return (wanted=='Men' and gender=='Man') or (wanted=='Women' and gender=='Woman') or wanted==gender
 @app.get('/api/discover')
 def discover(authorization:Optional[str]=Header(None)):
- uid=auth_user(authorization); c=conn(); viewer=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone(); rows=c.execute('SELECT * FROM users WHERE id!=? AND id NOT IN (SELECT liked_id FROM likes WHERE liker_id=?) ORDER BY verified DESC,id DESC LIMIT 100',(uid,uid)).fetchall(); out=[]
+ uid=auth_user(authorization); c=conn(); viewer=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone(); rows=c.execute('SELECT * FROM users WHERE id!=? AND id NOT IN (SELECT liked_id FROM likes WHERE liker_id=?) ORDER BY verified DESC,id DESC LIMIT 150',(uid,uid)).fetchall(); out=[]
  for r in rows:
-  if r['age'] < (viewer['min_age'] or 18) or r['age'] > (viewer['max_age'] or 99): continue
-  if not gender_matches(viewer['interested_in'],r['gender']): continue
-  if not gender_matches(r['interested_in'],viewer['gender']): continue
-  out.append(public_user(r))
+  if r['age']<(viewer['min_age'] or 18) or r['age']>(viewer['max_age'] or 99): continue
+  if not gender_matches(viewer['interested_in'],r['gender']) or not gender_matches(r['interested_in'],viewer['gender']): continue
+  dist=None
+  if viewer['latitude'] is not None and viewer['longitude'] is not None and r['latitude'] is not None and r['longitude'] is not None:
+   dist=distance_km(viewer['latitude'],viewer['longitude'],r['latitude'],r['longitude'])
+   if dist>(viewer['search_radius'] or 50): continue
+  out.append(public_user(r,dist))
   if len(out)>=30: break
  c.close(); return out
 @app.post('/api/like/{other_id}')
