@@ -13,20 +13,23 @@ def conn(): c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
 def hash_password(password,salt=None):
  salt=salt or secrets.token_hex(16); digest=hashlib.pbkdf2_hmac('sha256',password.encode(),salt.encode(),180_000).hex(); return f'{salt}${digest}'
 def verify_password(password,stored): salt,digest=stored.split('$',1); return secrets.compare_digest(hash_password(password,salt).split('$',1)[1],digest)
+def add_column(c,name,definition):
+ cols=[r['name'] for r in c.execute('PRAGMA table_info(users)').fetchall()]
+ if name not in cols: c.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
 def init_db():
- c=conn(); c.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,name TEXT NOT NULL,age INTEGER NOT NULL,location TEXT NOT NULL,handicap REAL,gender TEXT DEFAULT '',interested_in TEXT DEFAULT '',looking_for TEXT DEFAULT 'Dating and seeing where it goes',bio TEXT DEFAULT '',golf_style TEXT DEFAULT 'Social golfer',home_club TEXT DEFAULT '',photo TEXT DEFAULT '',verified INTEGER DEFAULT 0,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS admin_sessions(token TEXT PRIMARY KEY,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS likes(liker_id INTEGER NOT NULL,liked_id INTEGER NOT NULL,created_at TEXT NOT NULL,UNIQUE(liker_id,liked_id)); CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,sender_id INTEGER NOT NULL,receiver_id INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);'''); c.commit(); c.close()
+ c=conn(); c.executescript('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,name TEXT NOT NULL,age INTEGER NOT NULL,location TEXT NOT NULL,handicap REAL,gender TEXT DEFAULT '',interested_in TEXT DEFAULT '',looking_for TEXT DEFAULT 'Dating and seeing where it goes',bio TEXT DEFAULT '',golf_style TEXT DEFAULT 'Social golfer',home_club TEXT DEFAULT '',photo TEXT DEFAULT '',verified INTEGER DEFAULT 0,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS admin_sessions(token TEXT PRIMARY KEY,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS likes(liker_id INTEGER NOT NULL,liked_id INTEGER NOT NULL,created_at TEXT NOT NULL,UNIQUE(liker_id,liked_id)); CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,sender_id INTEGER NOT NULL,receiver_id INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);''')
+ add_column(c,'min_age','INTEGER DEFAULT 18'); add_column(c,'max_age','INTEGER DEFAULT 80'); add_column(c,'search_radius','INTEGER DEFAULT 50'); add_column(c,'onboarding_complete','INTEGER DEFAULT 0'); c.commit(); c.close()
 def remove_old_demo_accounts():
  demos=('aoife@example.com','david@example.com','sarah@example.com','mark@example.com'); c=conn(); q=','.join('?'*len(demos)); ids=[r['id'] for r in c.execute(f'SELECT id FROM users WHERE email IN ({q})',demos).fetchall()]
  if ids:
   iq=','.join('?'*len(ids)); c.execute(f'DELETE FROM messages WHERE sender_id IN ({iq}) OR receiver_id IN ({iq})',ids+ids); c.execute(f'DELETE FROM likes WHERE liker_id IN ({iq}) OR liked_id IN ({iq})',ids+ids); c.execute(f'DELETE FROM sessions WHERE user_id IN ({iq})',ids); c.execute(f'DELETE FROM users WHERE id IN ({iq})',ids); c.commit()
  c.close()
 init_db(); remove_old_demo_accounts()
-class Register(BaseModel):
- email:str; password:str; name:str; age:int; location:str; handicap:Optional[float]=None; gender:str=''; interested_in:str=''; looking_for:str='Dating and seeing where it goes'
+class Register(BaseModel): email:str; password:str; name:str; age:int; location:str; handicap:Optional[float]=None; gender:str=''; interested_in:str=''; looking_for:str='Dating and seeing where it goes'
 class Login(BaseModel): email:str; password:str
 class AdminLogin(BaseModel): email:str; password:str
 class ProfileUpdate(BaseModel):
- name:Optional[str]=None; age:Optional[int]=None; location:Optional[str]=None; handicap:Optional[float]=None; gender:Optional[str]=None; interested_in:Optional[str]=None; looking_for:Optional[str]=None; bio:Optional[str]=None; golf_style:Optional[str]=None; home_club:Optional[str]=None; photo:Optional[str]=None
+ name:Optional[str]=None; age:Optional[int]=None; location:Optional[str]=None; handicap:Optional[float]=None; gender:Optional[str]=None; interested_in:Optional[str]=None; looking_for:Optional[str]=None; bio:Optional[str]=None; golf_style:Optional[str]=None; home_club:Optional[str]=None; photo:Optional[str]=None; min_age:Optional[int]=None; max_age:Optional[int]=None; search_radius:Optional[int]=None; onboarding_complete:Optional[int]=None
 class MessageIn(BaseModel): receiver_id:int; body:str
 def auth_user(a):
  if not a or not a.startswith('Bearer '): raise HTTPException(401,'Please log in')
@@ -37,7 +40,7 @@ def auth_admin(a):
  if not a or not a.startswith('Bearer '): raise HTTPException(401,'Admin login required')
  c=conn(); r=c.execute('SELECT token FROM admin_sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
  if not r: raise HTTPException(401,'Admin session expired')
-def public_user(r): return {k:r[k] for k in ['id','name','age','location','handicap','gender','interested_in','looking_for','bio','golf_style','home_club','photo','verified']}
+def public_user(r): return {k:r[k] for k in ['id','name','age','location','handicap','gender','interested_in','looking_for','bio','golf_style','home_club','photo','verified','min_age','max_age','search_radius','onboarding_complete']}
 @app.get('/health')
 def health(): return {'status':'ok'}
 @app.get('/')
@@ -48,7 +51,7 @@ def admin_page(): return FileResponse(os.path.join(BASE,'static','admin.html'))
 def admin_login(d:AdminLogin):
  e=os.environ.get('ADMIN_EMAIL','').strip().lower(); p=os.environ.get('ADMIN_PASSWORD','')
  if not e or not p: raise HTTPException(503,'Admin access has not been configured')
- if not (secrets.compare_digest(d.email.strip().lower(),e) and secrets.compare_digest(d.password,p)): raise HTTPException(401,'Incorrect admin email or password')
+ if not(secrets.compare_digest(d.email.strip().lower(),e) and secrets.compare_digest(d.password,p)): raise HTTPException(401,'Incorrect admin email or password')
  t=secrets.token_urlsafe(40); c=conn(); c.execute('INSERT INTO admin_sessions VALUES(?,?)',(t,datetime.utcnow().isoformat())); c.commit(); c.close(); return {'token':t}
 @app.get('/api/admin/stats')
 def admin_stats(authorization:Optional[str]=Header(None)):
@@ -62,7 +65,7 @@ def register(d:Register):
  if len(d.password)<8: raise HTTPException(400,'Password must be at least 8 characters')
  c=conn()
  try:
-  cur=c.execute('INSERT INTO users(email,password_hash,name,age,location,handicap,gender,interested_in,looking_for,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',(d.email.lower().strip(),hash_password(d.password),d.name.strip(),d.age,d.location.strip(),d.handicap,d.gender,d.interested_in,d.looking_for,datetime.utcnow().isoformat())); uid=cur.lastrowid; t=secrets.token_urlsafe(32); c.execute('INSERT INTO sessions VALUES(?,?,?)',(t,uid,datetime.utcnow().isoformat())); c.commit()
+  cur=c.execute('INSERT INTO users(email,password_hash,name,age,location,handicap,gender,interested_in,looking_for,created_at,min_age,max_age,search_radius,onboarding_complete) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(d.email.lower().strip(),hash_password(d.password),d.name.strip(),d.age,d.location.strip(),d.handicap,d.gender,d.interested_in,d.looking_for,datetime.utcnow().isoformat(),max(18,d.age-10),min(99,d.age+10),50,0)); uid=cur.lastrowid; t=secrets.token_urlsafe(32); c.execute('INSERT INTO sessions VALUES(?,?,?)',(t,uid,datetime.utcnow().isoformat())); c.commit()
  except sqlite3.IntegrityError: c.close(); raise HTTPException(409,'An account with that email already exists')
  c.close(); return {'token':t,'user_id':uid}
 @app.post('/api/login')
@@ -75,13 +78,26 @@ def me(authorization:Optional[str]=Header(None)):
  uid=auth_user(authorization); c=conn(); u=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone(); c.close(); return public_user(u)
 @app.put('/api/me')
 def update_me(d:ProfileUpdate,authorization:Optional[str]=Header(None)):
- uid=auth_user(authorization); fields=[]; vals=[]
- for k,v in d.model_dump(exclude_unset=True).items(): fields.append(f'{k}=?'); vals.append(v)
+ uid=auth_user(authorization); data=d.model_dump(exclude_unset=True)
+ if 'min_age' in data and data['min_age'] is not None and not 18<=data['min_age']<=99: raise HTTPException(400,'Minimum age must be between 18 and 99')
+ if 'max_age' in data and data['max_age'] is not None and not 18<=data['max_age']<=99: raise HTTPException(400,'Maximum age must be between 18 and 99')
+ fields=[]; vals=[]
+ for k,v in data.items(): fields.append(f'{k}=?'); vals.append(v)
  if fields: vals.append(uid); c=conn(); c.execute('UPDATE users SET '+','.join(fields)+' WHERE id=?',vals); c.commit(); c.close()
  return {'ok':True}
+def gender_matches(wanted,gender):
+ if not wanted or wanted=='Everyone': return True
+ return (wanted=='Men' and gender=='Man') or (wanted=='Women' and gender=='Woman') or wanted==gender
 @app.get('/api/discover')
 def discover(authorization:Optional[str]=Header(None)):
- uid=auth_user(authorization); c=conn(); rows=c.execute('SELECT * FROM users WHERE id!=? AND id NOT IN (SELECT liked_id FROM likes WHERE liker_id=?) ORDER BY verified DESC,id DESC LIMIT 30',(uid,uid)).fetchall(); out=[public_user(r) for r in rows]; c.close(); return out
+ uid=auth_user(authorization); c=conn(); viewer=c.execute('SELECT * FROM users WHERE id=?',(uid,)).fetchone(); rows=c.execute('SELECT * FROM users WHERE id!=? AND id NOT IN (SELECT liked_id FROM likes WHERE liker_id=?) ORDER BY verified DESC,id DESC LIMIT 100',(uid,uid)).fetchall(); out=[]
+ for r in rows:
+  if r['age'] < (viewer['min_age'] or 18) or r['age'] > (viewer['max_age'] or 99): continue
+  if not gender_matches(viewer['interested_in'],r['gender']): continue
+  if not gender_matches(r['interested_in'],viewer['gender']): continue
+  out.append(public_user(r))
+  if len(out)>=30: break
+ c.close(); return out
 @app.post('/api/like/{other_id}')
 def like(other_id:int,authorization:Optional[str]=Header(None)):
  uid=auth_user(authorization)
