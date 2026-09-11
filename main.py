@@ -13,22 +13,27 @@ DB = os.path.join(DATA_DIR, 'lovebirdies.db')
 app = FastAPI(title='LoveBirdies MVP')
 app.mount('/static', StaticFiles(directory=os.path.join(BASE, 'static')), name='static')
 
+
 def conn():
     c = sqlite3.connect(DB)
     c.row_factory = sqlite3.Row
     return c
+
 
 def hash_password(password, salt=None):
     salt = salt or secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), 180_000).hex()
     return f'{salt}${digest}'
 
+
 def verify_password(password, stored):
     salt, digest = stored.split('$', 1)
-    return secrets.compare_digest(hash_password(password, salt).split('$',1)[1], digest)
+    return secrets.compare_digest(hash_password(password, salt).split('$', 1)[1], digest)
+
 
 def init_db():
-    c=conn(); cur=c.cursor()
+    c = conn()
+    cur = c.cursor()
     cur.executescript('''
     CREATE TABLE IF NOT EXISTS users(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,127 +72,281 @@ def init_db():
       created_at TEXT NOT NULL
     );
     ''')
-    c.commit(); c.close()
-
-def seed_demo():
-    c=conn(); cur=c.cursor()
-    cur.execute('SELECT COUNT(*) n FROM users')
-    if cur.fetchone()['n'] == 0:
-        demos=[
-          ('aoife@example.com','Demo123!','Aoife',39,'Malahide',16,'Woman','Men','A serious relationship','Love links courses, sea swims and post-round dinner.','Competitive & social','Malahide Golf Club','https://images.unsplash.com/photo-1535131749006-b7f58c99034b?auto=format&fit=crop&w=900&q=80',1),
-          ('david@example.com','Demo123!','David',46,'Portmarnock',22,'Man','Women','Dating and seeing where it goes','Social golfer, travel addict, always up for a twilight nine.','Social golfer','Portmarnock','https://images.unsplash.com/photo-1587174486073-ae5e5cff23aa?auto=format&fit=crop&w=900&q=80',1),
-          ('sarah@example.com','Demo123!','Sarah',44,'Skerries',12,'Woman','Men','A serious relationship','Competitive but friendly. Golf, hiking and great food.','Competitive golfer','Skerries','https://images.unsplash.com/photo-1592919505780-303950717480?auto=format&fit=crop&w=900&q=80',1),
-          ('mark@example.com','Demo123!','Mark',50,'Donabate',18,'Man','Women','Dating and seeing where it goes','Weekend golf, live music, cooking and the odd golf trip abroad.','Social golfer','Donabate Golf Club','https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?auto=format&fit=crop&w=900&q=80',0),
-        ]
-        for d in demos:
-            email,pw,name,age,loc,hcp,gender,interested,looking,bio,style,club,photo,verified=d
-            cur.execute('''INSERT INTO users(email,password_hash,name,age,location,handicap,gender,interested_in,looking_for,bio,golf_style,home_club,photo,verified,created_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',(email,hash_password(pw),name,age,loc,hcp,gender,interested,looking,bio,style,club,photo,verified,datetime.utcnow().isoformat()))
-        c.commit()
+    c.commit()
     c.close()
 
-init_db(); seed_demo()
+
+def remove_old_demo_accounts():
+    demo_emails = (
+        'aoife@example.com',
+        'david@example.com',
+        'sarah@example.com',
+        'mark@example.com',
+    )
+    c = conn()
+    cur = c.cursor()
+    placeholders = ','.join('?' for _ in demo_emails)
+    cur.execute(f'SELECT id FROM users WHERE email IN ({placeholders})', demo_emails)
+    demo_ids = [row['id'] for row in cur.fetchall()]
+
+    if demo_ids:
+        id_placeholders = ','.join('?' for _ in demo_ids)
+        cur.execute(
+            f'DELETE FROM messages WHERE sender_id IN ({id_placeholders}) OR receiver_id IN ({id_placeholders})',
+            demo_ids + demo_ids,
+        )
+        cur.execute(
+            f'DELETE FROM likes WHERE liker_id IN ({id_placeholders}) OR liked_id IN ({id_placeholders})',
+            demo_ids + demo_ids,
+        )
+        cur.execute(f'DELETE FROM sessions WHERE user_id IN ({id_placeholders})', demo_ids)
+        cur.execute(f'DELETE FROM users WHERE id IN ({id_placeholders})', demo_ids)
+        c.commit()
+
+    c.close()
+
+
+init_db()
+remove_old_demo_accounts()
+
 
 class Register(BaseModel):
-    email:str; password:str; name:str; age:int; location:str
-    handicap:Optional[float]=None; gender:str=''; interested_in:str=''; looking_for:str='Dating and seeing where it goes'
-class Login(BaseModel): email:str; password:str
+    email: str
+    password: str
+    name: str
+    age: int
+    location: str
+    handicap: Optional[float] = None
+    gender: str = ''
+    interested_in: str = ''
+    looking_for: str = 'Dating and seeing where it goes'
+
+
+class Login(BaseModel):
+    email: str
+    password: str
+
+
 class ProfileUpdate(BaseModel):
-    name:Optional[str]=None; age:Optional[int]=None; location:Optional[str]=None; handicap:Optional[float]=None
-    gender:Optional[str]=None; interested_in:Optional[str]=None; looking_for:Optional[str]=None; bio:Optional[str]=None
-    golf_style:Optional[str]=None; home_club:Optional[str]=None; photo:Optional[str]=None
-class MessageIn(BaseModel): receiver_id:int; body:str
+    name: Optional[str] = None
+    age: Optional[int] = None
+    location: Optional[str] = None
+    handicap: Optional[float] = None
+    gender: Optional[str] = None
+    interested_in: Optional[str] = None
+    looking_for: Optional[str] = None
+    bio: Optional[str] = None
+    golf_style: Optional[str] = None
+    home_club: Optional[str] = None
+    photo: Optional[str] = None
+
+
+class MessageIn(BaseModel):
+    receiver_id: int
+    body: str
+
 
 def auth_user(authorization: Optional[str]):
-    if not authorization or not authorization.startswith('Bearer '): raise HTTPException(401,'Please log in')
-    token=authorization[7:]
-    c=conn(); cur=c.cursor(); cur.execute('SELECT user_id FROM sessions WHERE token=?',(token,)); r=cur.fetchone(); c.close()
-    if not r: raise HTTPException(401,'Session expired')
+    if not authorization or not authorization.startswith('Bearer '):
+        raise HTTPException(401, 'Please log in')
+    token = authorization[7:]
+    c = conn()
+    cur = c.cursor()
+    cur.execute('SELECT user_id FROM sessions WHERE token=?', (token,))
+    r = cur.fetchone()
+    c.close()
+    if not r:
+        raise HTTPException(401, 'Session expired')
     return r['user_id']
 
+
 def public_user(r):
-    return {k:r[k] for k in ['id','name','age','location','handicap','gender','interested_in','looking_for','bio','golf_style','home_club','photo','verified']}
+    return {
+        k: r[k]
+        for k in [
+            'id', 'name', 'age', 'location', 'handicap', 'gender',
+            'interested_in', 'looking_for', 'bio', 'golf_style',
+            'home_club', 'photo', 'verified'
+        ]
+    }
+
 
 @app.get('/health')
-def health(): return {'status':'ok'}
+def health():
+    return {'status': 'ok'}
+
 
 @app.get('/')
-def home(): return FileResponse(os.path.join(BASE,'static','index.html'))
+def home():
+    return FileResponse(os.path.join(BASE, 'static', 'index.html'))
+
 
 @app.post('/api/register')
-def register(data:Register):
-    if data.age < 18: raise HTTPException(400,'LoveBirdies is for adults aged 18+ only')
-    if len(data.password)<8: raise HTTPException(400,'Password must be at least 8 characters')
-    c=conn(); cur=c.cursor()
+def register(data: Register):
+    if data.age < 18:
+        raise HTTPException(400, 'LoveBirdies is for adults aged 18+ only')
+    if len(data.password) < 8:
+        raise HTTPException(400, 'Password must be at least 8 characters')
+
+    c = conn()
+    cur = c.cursor()
     try:
-        cur.execute('''INSERT INTO users(email,password_hash,name,age,location,handicap,gender,interested_in,looking_for,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?)''',(data.email.lower().strip(),hash_password(data.password),data.name.strip(),data.age,data.location.strip(),data.handicap,data.gender,data.interested_in,data.looking_for,datetime.utcnow().isoformat()))
-        uid=cur.lastrowid; token=secrets.token_urlsafe(32)
-        cur.execute('INSERT INTO sessions VALUES(?,?,?)',(token,uid,datetime.utcnow().isoformat())); c.commit()
+        cur.execute(
+            '''INSERT INTO users(email,password_hash,name,age,location,handicap,gender,interested_in,looking_for,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)''',
+            (
+                data.email.lower().strip(), hash_password(data.password), data.name.strip(),
+                data.age, data.location.strip(), data.handicap, data.gender,
+                data.interested_in, data.looking_for, datetime.utcnow().isoformat()
+            ),
+        )
+        uid = cur.lastrowid
+        token = secrets.token_urlsafe(32)
+        cur.execute('INSERT INTO sessions VALUES(?,?,?)', (token, uid, datetime.utcnow().isoformat()))
+        c.commit()
     except sqlite3.IntegrityError:
-        c.close(); raise HTTPException(409,'An account with that email already exists')
-    c.close(); return {'token':token,'user_id':uid}
+        c.close()
+        raise HTTPException(409, 'An account with that email already exists')
+
+    c.close()
+    return {'token': token, 'user_id': uid}
+
 
 @app.post('/api/login')
-def login(data:Login):
-    c=conn(); cur=c.cursor(); cur.execute('SELECT * FROM users WHERE email=?',(data.email.lower().strip(),)); u=cur.fetchone()
-    if not u or not verify_password(data.password,u['password_hash']): c.close(); raise HTTPException(401,'Incorrect email or password')
-    token=secrets.token_urlsafe(32); cur.execute('INSERT INTO sessions VALUES(?,?,?)',(token,u['id'],datetime.utcnow().isoformat())); c.commit(); c.close()
-    return {'token':token,'user_id':u['id']}
+def login(data: Login):
+    c = conn()
+    cur = c.cursor()
+    cur.execute('SELECT * FROM users WHERE email=?', (data.email.lower().strip(),))
+    u = cur.fetchone()
+    if not u or not verify_password(data.password, u['password_hash']):
+        c.close()
+        raise HTTPException(401, 'Incorrect email or password')
+
+    token = secrets.token_urlsafe(32)
+    cur.execute('INSERT INTO sessions VALUES(?,?,?)', (token, u['id'], datetime.utcnow().isoformat()))
+    c.commit()
+    c.close()
+    return {'token': token, 'user_id': u['id']}
+
 
 @app.get('/api/me')
-def me(authorization:Optional[str]=Header(None)):
-    uid=auth_user(authorization); c=conn(); cur=c.cursor(); cur.execute('SELECT * FROM users WHERE id=?',(uid,)); u=cur.fetchone(); c.close(); return public_user(u)
+def me(authorization: Optional[str] = Header(None)):
+    uid = auth_user(authorization)
+    c = conn()
+    cur = c.cursor()
+    cur.execute('SELECT * FROM users WHERE id=?', (uid,))
+    u = cur.fetchone()
+    c.close()
+    return public_user(u)
+
 
 @app.put('/api/me')
-def update_me(data:ProfileUpdate, authorization:Optional[str]=Header(None)):
-    uid=auth_user(authorization); fields=[]; vals=[]
-    for k,v in data.model_dump(exclude_unset=True).items(): fields.append(f'{k}=?'); vals.append(v)
+def update_me(data: ProfileUpdate, authorization: Optional[str] = Header(None)):
+    uid = auth_user(authorization)
+    fields = []
+    vals = []
+    for k, v in data.model_dump(exclude_unset=True).items():
+        fields.append(f'{k}=?')
+        vals.append(v)
     if fields:
-        vals.append(uid); c=conn(); c.execute('UPDATE users SET '+','.join(fields)+' WHERE id=?', vals); c.commit(); c.close()
-    return {'ok':True}
+        vals.append(uid)
+        c = conn()
+        c.execute('UPDATE users SET ' + ','.join(fields) + ' WHERE id=?', vals)
+        c.commit()
+        c.close()
+    return {'ok': True}
+
 
 @app.get('/api/discover')
-def discover(authorization:Optional[str]=Header(None)):
-    uid=auth_user(authorization); c=conn(); cur=c.cursor()
-    cur.execute('''SELECT * FROM users WHERE id!=? AND id NOT IN (SELECT liked_id FROM likes WHERE liker_id=?) ORDER BY verified DESC,id DESC LIMIT 30''',(uid,uid))
-    out=[public_user(x) for x in cur.fetchall()]; c.close(); return out
+def discover(authorization: Optional[str] = Header(None)):
+    uid = auth_user(authorization)
+    c = conn()
+    cur = c.cursor()
+    cur.execute(
+        '''SELECT * FROM users
+        WHERE id!=? AND id NOT IN (SELECT liked_id FROM likes WHERE liker_id=?)
+        ORDER BY verified DESC,id DESC LIMIT 30''',
+        (uid, uid),
+    )
+    out = [public_user(x) for x in cur.fetchall()]
+    c.close()
+    return out
+
 
 @app.post('/api/like/{other_id}')
-def like(other_id:int, authorization:Optional[str]=Header(None)):
-    uid=auth_user(authorization)
-    if uid==other_id: raise HTTPException(400,'Cannot like yourself')
-    c=conn(); cur=c.cursor(); cur.execute('INSERT OR IGNORE INTO likes VALUES(?,?,?)',(uid,other_id,datetime.utcnow().isoformat()))
-    cur.execute('SELECT 1 FROM likes WHERE liker_id=? AND liked_id=?',(other_id,uid)); matched=cur.fetchone() is not None
-    c.commit(); c.close(); return {'matched':matched}
+def like(other_id: int, authorization: Optional[str] = Header(None)):
+    uid = auth_user(authorization)
+    if uid == other_id:
+        raise HTTPException(400, 'Cannot like yourself')
+    c = conn()
+    cur = c.cursor()
+    cur.execute('INSERT OR IGNORE INTO likes VALUES(?,?,?)', (uid, other_id, datetime.utcnow().isoformat()))
+    cur.execute('SELECT 1 FROM likes WHERE liker_id=? AND liked_id=?', (other_id, uid))
+    matched = cur.fetchone() is not None
+    c.commit()
+    c.close()
+    return {'matched': matched}
+
 
 @app.get('/api/matches')
-def matches(authorization:Optional[str]=Header(None)):
-    uid=auth_user(authorization); c=conn(); cur=c.cursor()
-    cur.execute('''SELECT u.* FROM users u JOIN likes a ON a.liked_id=u.id JOIN likes b ON b.liker_id=u.id AND b.liked_id=a.liker_id WHERE a.liker_id=? ORDER BY a.created_at DESC''',(uid,))
-    out=[public_user(x) for x in cur.fetchall()]; c.close(); return out
+def matches(authorization: Optional[str] = Header(None)):
+    uid = auth_user(authorization)
+    c = conn()
+    cur = c.cursor()
+    cur.execute(
+        '''SELECT u.* FROM users u
+        JOIN likes a ON a.liked_id=u.id
+        JOIN likes b ON b.liker_id=u.id AND b.liked_id=a.liker_id
+        WHERE a.liker_id=? ORDER BY a.created_at DESC''',
+        (uid,),
+    )
+    out = [public_user(x) for x in cur.fetchall()]
+    c.close()
+    return out
+
 
 @app.get('/api/messages/{other_id}')
-def get_messages(other_id:int, authorization:Optional[str]=Header(None)):
-    uid=auth_user(authorization); c=conn(); cur=c.cursor()
-    cur.execute('''SELECT m.*, s.name sender_name FROM messages m JOIN users s ON s.id=m.sender_id
-      WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?) ORDER BY m.id''',(uid,other_id,other_id,uid))
-    out=[dict(x) for x in cur.fetchall()]; c.close(); return out
+def get_messages(other_id: int, authorization: Optional[str] = Header(None)):
+    uid = auth_user(authorization)
+    c = conn()
+    cur = c.cursor()
+    cur.execute(
+        '''SELECT m.*, s.name sender_name FROM messages m
+        JOIN users s ON s.id=m.sender_id
+        WHERE (sender_id=? AND receiver_id=?) OR (sender_id=? AND receiver_id=?)
+        ORDER BY m.id''',
+        (uid, other_id, other_id, uid),
+    )
+    out = [dict(x) for x in cur.fetchall()]
+    c.close()
+    return out
+
 
 @app.post('/api/messages')
-def send_message(data:MessageIn, authorization:Optional[str]=Header(None)):
-    uid=auth_user(authorization); body=data.body.strip()
-    if not body: raise HTTPException(400,'Message cannot be empty')
-    c=conn(); cur=c.cursor()
-    cur.execute('SELECT 1 FROM likes WHERE liker_id=? AND liked_id=?',(uid,data.receiver_id)); a=cur.fetchone()
-    cur.execute('SELECT 1 FROM likes WHERE liker_id=? AND liked_id=?',(data.receiver_id,uid)); b=cur.fetchone()
-    if not (a and b): c.close(); raise HTTPException(403,'You can only message a match')
-    cur.execute('INSERT INTO messages(sender_id,receiver_id,body,created_at) VALUES(?,?,?,?)',(uid,data.receiver_id,body,datetime.utcnow().isoformat())); c.commit(); c.close(); return {'ok':True}
+def send_message(data: MessageIn, authorization: Optional[str] = Header(None)):
+    uid = auth_user(authorization)
+    body = data.body.strip()
+    if not body:
+        raise HTTPException(400, 'Message cannot be empty')
 
-@app.post('/api/demo-match/{other_id}')
-def demo_match(other_id:int, authorization:Optional[str]=Header(None)):
-    uid=auth_user(authorization); c=conn(); cur=c.cursor(); now=datetime.utcnow().isoformat()
-    cur.execute('INSERT OR IGNORE INTO likes VALUES(?,?,?)',(uid,other_id,now)); cur.execute('INSERT OR IGNORE INTO likes VALUES(?,?,?)',(other_id,uid,now)); c.commit(); c.close(); return {'matched':True}
+    c = conn()
+    cur = c.cursor()
+    cur.execute('SELECT 1 FROM likes WHERE liker_id=? AND liked_id=?', (uid, data.receiver_id))
+    a = cur.fetchone()
+    cur.execute('SELECT 1 FROM likes WHERE liker_id=? AND liked_id=?', (data.receiver_id, uid))
+    b = cur.fetchone()
+    if not (a and b):
+        c.close()
+        raise HTTPException(403, 'You can only message a match')
+
+    cur.execute(
+        'INSERT INTO messages(sender_id,receiver_id,body,created_at) VALUES(?,?,?,?)',
+        (uid, data.receiver_id, body, datetime.utcnow().isoformat()),
+    )
+    c.commit()
+    c.close()
+    return {'ok': True}
+
 
 if __name__ == '__main__':
     import uvicorn
