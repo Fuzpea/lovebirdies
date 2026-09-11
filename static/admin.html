@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LoveBirdies Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  <header class="admin-header">
+    <div class="brand"><span>♥</span>LoveBirdies <small>Admin</small></div>
+    <a href="/" class="back-link">← Back to site</a>
+  </header>
+
+  <main>
+    <section id="loginPanel" class="login-wrap">
+      <form id="adminLoginForm" class="login-card">
+        <div class="eyebrow">Private administration</div>
+        <h1>Admin login</h1>
+        <p>Use the credentials configured securely in Railway.</p>
+        <label>Email<input id="adminEmail" type="email" autocomplete="username" required></label>
+        <label>Password<input id="adminPassword" type="password" autocomplete="current-password" required></label>
+        <button class="primary" type="submit">Log in</button>
+        <p id="loginError" class="error"></p>
+      </form>
+    </section>
+
+    <section id="dashboard" class="dashboard hidden">
+      <div class="dashboard-top">
+        <div><div class="eyebrow">Overview</div><h1>LoveBirdies users</h1><p>Private account and activity overview.</p></div>
+        <button id="adminLogout" class="secondary">Log out</button>
+      </div>
+
+      <div class="stats">
+        <article><span id="statUsers">0</span><small>Registered users</small></article>
+        <article><span id="statLikes">0</span><small>Likes sent</small></article>
+        <article><span id="statMatches">0</span><small>Matches</small></article>
+        <article><span id="statMessages">0</span><small>Messages</small></article>
+      </div>
+
+      <div class="table-card">
+        <div class="table-head"><div><h2>Accounts</h2><p>Passwords are never shown.</p></div><input id="search" placeholder="Search name, email or location"></div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Name</th><th>Email</th><th>Age</th><th>Location</th><th>Handicap</th><th>Home club</th><th>Looking for</th><th>Joined</th></tr></thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div>
+        <div id="emptyState" class="empty hidden">No accounts found.</div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>
