@@ -1,0 +1,1 @@
+(()=>{const form=document.getElementById('profileForm');if(!form)return;form.addEventListener('submit',()=>{const f=form.elements['onboarding_complete'];if(f)f.value='1'},true);})();
