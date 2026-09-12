@@ -22,6 +22,9 @@ def club(a):
  c=conn(); r=c.execute('SELECT club_id FROM club_sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
  if not r: raise HTTPException(401,'Club session expired')
  return r['club_id']
+def ensure_col(c,table,name,definition):
+ cols=[r['name'] for r in c.execute(f'PRAGMA table_info({table})').fetchall()]
+ if name not in cols: c.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
 def init():
  c=conn(); c.executescript('''
  CREATE TABLE IF NOT EXISTS clubs(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,location TEXT NOT NULL,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,website TEXT DEFAULT '',description TEXT DEFAULT '',logo TEXT DEFAULT '',verified INTEGER DEFAULT 0,created_at TEXT NOT NULL);
@@ -30,16 +33,18 @@ def init():
  CREATE TABLE IF NOT EXISTS golf_interest(id INTEGER PRIMARY KEY AUTOINCREMENT,post_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created_at TEXT NOT NULL,UNIQUE(post_id,user_id));
  CREATE TABLE IF NOT EXISTS club_events(id INTEGER PRIMARY KEY AUTOINCREMENT,club_id INTEGER NOT NULL,title TEXT NOT NULL,event_date TEXT NOT NULL,event_time TEXT NOT NULL,format TEXT DEFAULT '9-hole social golf',description TEXT DEFAULT '',price REAL DEFAULT 0,capacity INTEGER DEFAULT 24,status TEXT DEFAULT 'published',created_at TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS event_bookings(id INTEGER PRIMARY KEY AUTOINCREMENT,event_id INTEGER NOT NULL,user_id INTEGER NOT NULL,status TEXT DEFAULT 'going',created_at TEXT NOT NULL,UNIQUE(event_id,user_id));
- '''); c.commit(); c.close()
+ ''')
+ for n,d in [('hero_image',"TEXT DEFAULT ''"),('contact_name',"TEXT DEFAULT ''"),('tagline',"TEXT DEFAULT ''")]: ensure_col(c,'clubs',n,d)
+ c.commit(); c.close()
 init()
 class PostIn(BaseModel): kind:str; venue:str; event_date:str; event_time:str; holes:str=''; style:str='Social'; notes:str=''; capacity:int=2
 class ClubRegister(BaseModel): name:str; location:str; email:str; password:str; website:str=''; description:str=''
 class ClubLogin(BaseModel): email:str; password:str
-class ClubUpdate(BaseModel): name:Optional[str]=None; location:Optional[str]=None; website:Optional[str]=None; description:Optional[str]=None
+class ClubUpdate(BaseModel): name:Optional[str]=None; location:Optional[str]=None; website:Optional[str]=None; description:Optional[str]=None; logo:Optional[str]=None; hero_image:Optional[str]=None; contact_name:Optional[str]=None; tagline:Optional[str]=None
 class EventIn(BaseModel): title:str='LoveBirdies Singles Golf Night'; event_date:str; event_time:str; format:str='9-hole social golf'; description:str=''; price:float=0; capacity:int=24
 @router.get('/api/golf/feed')
 def feed(authorization:Optional[str]=Header(None)):
- uid=user(authorization); c=conn(); posts=c.execute('''SELECT p.*,u.name host_name,u.handicap host_handicap,u.photo host_photo,(SELECT COUNT(*) FROM golf_interest i WHERE i.post_id=p.id) interested,EXISTS(SELECT 1 FROM golf_interest i WHERE i.post_id=p.id AND i.user_id=?) mine FROM golf_posts p JOIN users u ON u.id=p.user_id WHERE p.status='open' AND p.event_date>=date('now') ORDER BY p.event_date,p.event_time''',(uid,)).fetchall(); events=c.execute('''SELECT e.*,c.name club_name,c.location club_location,c.verified club_verified,(SELECT COUNT(*) FROM event_bookings b WHERE b.event_id=e.id AND b.status='going') booked,EXISTS(SELECT 1 FROM event_bookings b WHERE b.event_id=e.id AND b.user_id=? AND b.status='going') mine FROM club_events e JOIN clubs c ON c.id=e.club_id WHERE e.status='published' AND e.event_date>=date('now') ORDER BY e.event_date,e.event_time''',(uid,)).fetchall(); c.close(); return {'posts':[dict(x) for x in posts],'events':[dict(x) for x in events]}
+ uid=user(authorization); c=conn(); posts=c.execute('''SELECT p.*,u.name host_name,u.handicap host_handicap,u.photo host_photo,(SELECT COUNT(*) FROM golf_interest i WHERE i.post_id=p.id) interested,EXISTS(SELECT 1 FROM golf_interest i WHERE i.post_id=p.id AND i.user_id=?) mine FROM golf_posts p JOIN users u ON u.id=p.user_id WHERE p.status='open' AND p.event_date>=date('now') ORDER BY p.event_date,p.event_time''',(uid,)).fetchall(); events=c.execute('''SELECT e.*,c.name club_name,c.location club_location,c.verified club_verified,c.logo club_logo,c.tagline club_tagline,(SELECT COUNT(*) FROM event_bookings b WHERE b.event_id=e.id AND b.status='going') booked,EXISTS(SELECT 1 FROM event_bookings b WHERE b.event_id=e.id AND b.user_id=? AND b.status='going') mine FROM club_events e JOIN clubs c ON c.id=e.club_id WHERE e.status='published' AND e.event_date>=date('now') ORDER BY e.event_date,e.event_time''',(uid,)).fetchall(); c.close(); return {'posts':[dict(x) for x in posts],'events':[dict(x) for x in events]}
 @router.post('/api/golf/posts')
 def create_post(d:PostIn,authorization:Optional[str]=Header(None)):
  uid=user(authorization)
@@ -79,19 +84,32 @@ def club_login(d:ClubLogin):
  t=secrets.token_urlsafe(32); c.execute('INSERT INTO club_sessions VALUES(?,?,?)',(t,x['id'],now())); c.commit(); c.close(); return {'token':t,'club_id':x['id']}
 @router.get('/api/clubs/me')
 def club_me(authorization:Optional[str]=Header(None)):
- cid=club(authorization); c=conn(); x=c.execute('SELECT id,name,location,email,website,description,verified FROM clubs WHERE id=?',(cid,)).fetchone(); c.close(); return dict(x)
+ cid=club(authorization); c=conn(); x=c.execute('SELECT id,name,location,email,website,description,logo,hero_image,contact_name,tagline,verified FROM clubs WHERE id=?',(cid,)).fetchone(); c.close(); return dict(x)
 @router.put('/api/clubs/me')
 def club_update(d:ClubUpdate,authorization:Optional[str]=Header(None)):
  cid=club(authorization); data=d.model_dump(exclude_unset=True); fields=[]; vals=[]
- for k,v in data.items(): fields.append(k+'=?'); vals.append(v)
+ for k,v in data.items(): fields.append(k+'=?'); vals.append(v.strip() if isinstance(v,str) else v)
  if fields: vals.append(cid); c=conn(); c.execute('UPDATE clubs SET '+','.join(fields)+' WHERE id=?',vals); c.commit(); c.close()
  return {'ok':True}
 @router.get('/api/clubs/events')
 def club_events(authorization:Optional[str]=Header(None)):
  cid=club(authorization); c=conn(); rows=c.execute('''SELECT e.*,(SELECT COUNT(*) FROM event_bookings b WHERE b.event_id=e.id AND b.status='going') booked FROM club_events e WHERE club_id=? ORDER BY event_date DESC,event_time''',(cid,)).fetchall(); c.close(); return [dict(x) for x in rows]
+@router.get('/api/clubs/events/{event_id}/attendees')
+def event_attendees(event_id:int,authorization:Optional[str]=Header(None)):
+ cid=club(authorization); c=conn(); own=c.execute('SELECT 1 FROM club_events WHERE id=? AND club_id=?',(event_id,cid)).fetchone()
+ if not own: c.close(); raise HTTPException(404,'Event not found')
+ rows=c.execute('''SELECT u.id,u.name,u.email,u.age,u.location,u.handicap,b.created_at booked_at FROM event_bookings b JOIN users u ON u.id=b.user_id WHERE b.event_id=? AND b.status='going' ORDER BY b.created_at''',(event_id,)).fetchall(); c.close(); return [dict(x) for x in rows]
 @router.post('/api/clubs/events')
 def create_event(d:EventIn,authorization:Optional[str]=Header(None)):
  cid=club(authorization); c=conn(); cur=c.execute('INSERT INTO club_events(club_id,title,event_date,event_time,format,description,price,capacity,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',(cid,d.title.strip(),d.event_date,d.event_time,d.format.strip(),d.description.strip(),max(0,d.price),max(4,min(d.capacity,200)),'published',now())); c.commit(); i=cur.lastrowid; c.close(); return {'ok':True,'id':i}
 @router.put('/api/clubs/events/{event_id}/cancel')
 def cancel_event(event_id:int,authorization:Optional[str]=Header(None)):
  cid=club(authorization); c=conn(); c.execute('UPDATE club_events SET status="cancelled" WHERE id=? AND club_id=?',(event_id,cid)); c.commit(); c.close(); return {'ok':True}
+@router.get('/api/clubs/public/{club_id}')
+def public_club(club_id:int):
+ c=conn(); x=c.execute('SELECT id,name,location,website,description,logo,hero_image,contact_name,tagline,verified,created_at FROM clubs WHERE id=?',(club_id,)).fetchone()
+ if not x: c.close(); raise HTTPException(404,'Club not found')
+ upcoming=c.execute("SELECT COUNT(*) n FROM club_events WHERE club_id=? AND status='published' AND event_date>=date('now')",(club_id,)).fetchone()['n']; past=c.execute("SELECT COUNT(*) n FROM club_events WHERE club_id=? AND event_date<date('now')",(club_id,)).fetchone()['n']; attendees=c.execute("SELECT COUNT(*) n FROM event_bookings b JOIN club_events e ON e.id=b.event_id WHERE e.club_id=? AND b.status='going'",(club_id,)).fetchone()['n']; out=dict(x); out.update({'upcoming_events':upcoming,'past_events':past,'total_bookings':attendees}); c.close(); return out
+@router.get('/api/clubs/public/{club_id}/events')
+def public_club_events(club_id:int):
+ c=conn(); rows=c.execute('''SELECT e.*,(SELECT COUNT(*) FROM event_bookings b WHERE b.event_id=e.id AND b.status='going') booked FROM club_events e WHERE e.club_id=? ORDER BY e.event_date DESC,e.event_time''',(club_id,)).fetchall(); c.close(); return [dict(x) for x in rows]
