@@ -85,6 +85,9 @@ def health(): return {'status':'ok'}
 @app.get('/')
 def home(): return FileResponse(os.path.join(BASE,'static','index.html'))
 
+@app.get('/join')
+def join_page(): return FileResponse(os.path.join(BASE,'static','join.html'))
+
 @app.get('/admin')
 def admin_page(): return FileResponse(os.path.join(BASE,'static','admin.html'))
 
