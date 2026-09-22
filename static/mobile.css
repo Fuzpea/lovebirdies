@@ -89,3 +89,13 @@
  #discoverView .profile-photo{height:64vh!important;min-height:430px!important}
  #discoverView .profile-body{padding:16px 18px 18px!important}
 }
+
+/* Navigation recovery: keep mobile app navigation permanently reachable */
+@media(max-width:700px){
+ body:has(#app:not(.hidden)){padding-top:58px!important;padding-bottom:82px!important}
+ body:has(#app:not(.hidden)) header{height:58px!important;min-height:58px!important;padding:0 14px!important;border-bottom:1px solid var(--line)!important;background:rgba(255,255,255,.97)!important;position:sticky!important;top:0!important}
+ body:has(#app:not(.hidden)) header>.brand{display:flex!important;font-size:18px!important}
+ body:has(#app:not(.hidden)) header>.brand img{width:34px!important;height:34px!important}
+ body:has(#app:not(.hidden)) header nav{display:flex!important}
+ #app:not(.hidden) .content{padding-top:20px!important}
+}
