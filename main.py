@@ -48,7 +48,7 @@ class Register(BaseModel):
 class Login(BaseModel): email:str; password:str
 class AdminLogin(BaseModel): email:str; password:str
 class ProfileUpdate(BaseModel):
- name:Optional[str]=None; age:Optional[int]=None; location:Optional[str]=None; handicap:Optional[float]=None; gender:Optional[str]=None; interested_in:Optional[str]=None; looking_for:Optional[str]=None; bio:Optional[str]=None; golf_style:Optional[str]=None; home_club:Optional[str]=None; photo:Optional[str]=None; min_age:Optional[int]=None; max_age:Optional[int]=None; search_radius:Optional[int]=None; onboarding_complete:Optional[int]=None; latitude:Optional[float]=None; longitude:Optional[float]=None
+ name:Optional[str]=None; age:Optional[int]=None; location:Optional[str]=None; handicap:Optional[float]=None; gender:Optional[str]=None; interested_in:Optional[str]=None; looking_for:Optional[str]=None; bio:Optional[str]=None; golf_style:Optional[str]=None; home_club:Optional[str]=None; min_age:Optional[int]=None; max_age:Optional[int]=None; search_radius:Optional[int]=None; onboarding_complete:Optional[int]=None; latitude:Optional[float]=None; longitude:Optional[float]=None
 class MessageIn(BaseModel): receiver_id:int; body:str
 class ReportIn(BaseModel): reported_id:int; reason:str; details:str=''
 class DeleteAccountIn(BaseModel): password:str
