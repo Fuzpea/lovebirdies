@@ -84,8 +84,13 @@ def club_register(d:ClubRegister):
  c.close(); return {'token':t,'club_id':cid}
 @router.post('/api/clubs/login')
 def club_login(d:ClubLogin):
- c=conn(); x=c.execute('SELECT * FROM clubs WHERE email=?',(d.email.lower().strip(),)).fetchone()
- if not x or not vp(d.password,x['password_hash']): c.close(); raise HTTPException(401,'Incorrect email or password')
+ from main import login_allowed, login_failure, login_success
+ account=d.email.lower().strip()
+ login_allowed('club',account)
+ c=conn(); x=c.execute('SELECT * FROM clubs WHERE email=?',(account,)).fetchone()
+ if not x or not vp(d.password,x['password_hash']):
+  c.close(); login_failure('club',account); raise HTTPException(401,'Incorrect email or password')
+ login_success('club',account)
  t=secrets.token_urlsafe(32); c.execute('INSERT INTO club_sessions VALUES(?,?,?)',(t,x['id'],now())); c.commit(); c.close(); return {'token':t,'club_id':x['id']}
 @router.post('/api/clubs/logout')
 def club_logout(authorization:Optional[str]=Header(None)):
