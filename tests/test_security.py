@@ -1,14 +1,22 @@
 import io
 import os
+import sys
+import importlib
 from PIL import Image
 from fastapi.testclient import TestClient
+
+def fresh_app():
+    for name in ("main", "photo_uploads", "golf_features"):
+        sys.modules.pop(name, None)
+    import main
+    return main.app
 
 def test_private_photo_access(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setenv("ADMIN_EMAIL", "admin@example.test")
     monkeypatch.setenv("ADMIN_PASSWORD", "test-admin-password")
     monkeypatch.setenv("ADMIN_TOTP_SECRET", "JBSWY3DPEHPK3PXP")
-    from main import app
+    app = fresh_app()
     with TestClient(app) as client:
         def register(email, name):
             r = client.post("/api/register", json={"email":email,"password":"test-password-123","name":name,"age":30,"location":"Dublin"})
@@ -38,7 +46,7 @@ def test_admin_mfa_and_login_lockout(tmp_path,monkeypatch):
     monkeypatch.setenv("ADMIN_PASSWORD","test-admin-password")
     monkeypatch.setenv("ADMIN_TOTP_SECRET","JBSWY3DPEHPK3PXP")
     import pyotp
-    from main import app
+    app = fresh_app()
     with TestClient(app) as client:
         credentials={"email":"admin@example.test","password":"test-admin-password"}
         assert client.post("/api/admin/login",json=credentials).status_code==401
