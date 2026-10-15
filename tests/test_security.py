@@ -60,3 +60,19 @@ def test_admin_mfa_and_login_lockout(tmp_path,monkeypatch):
         for i in range(5):
             client.post("/api/login",json={"email":"wrong@example.test","password":"wrong"})
         assert client.post("/api/login",json={"email":"wrong@example.test","password":"wrong"}).status_code==429
+
+def test_club_login_lockout_and_logout(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    app=fresh_app()
+    with TestClient(app) as client:
+        club={"name":"Test Golf Club","location":"Dublin","email":"club@example.test","password":"club-test-password"}
+        created=client.post("/api/clubs/register",json=club)
+        assert created.status_code==200,created.text
+        token=created.json()["token"]
+        auth={"Authorization":"Bearer "+token}
+        assert client.get("/api/clubs/me",headers=auth).status_code==200
+        assert client.post("/api/clubs/logout",headers=auth).status_code==200
+        assert client.get("/api/clubs/me",headers=auth).status_code==401
+        for i in range(5):
+            client.post("/api/clubs/login",json={"email":club["email"],"password":"wrong"})
+        assert client.post("/api/clubs/login",json={"email":club["email"],"password":club["password"]}).status_code==429
