@@ -2,7 +2,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import sqlite3, os, secrets, hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 router=APIRouter(); BASE=os.path.dirname(__file__); DATA_DIR=os.environ.get('DATA_DIR',BASE); DB=os.path.join(DATA_DIR,'lovebirdies.db')
 def conn(): c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
@@ -12,15 +12,20 @@ def hp(p,s=None):
 def vp(p,x):
  try: s,d=x.split('$',1); return secrets.compare_digest(hp(p,s).split('$',1)[1],d)
  except: return False
+SESSION_HOURS=max(1,int(os.environ.get('SESSION_HOURS','168')))
+CLUB_SESSION_HOURS=max(1,int(os.environ.get('CLUB_SESSION_HOURS','168')))
+def session_valid(created,hours):
+ try: return datetime.fromisoformat(created)+timedelta(hours=hours)>datetime.utcnow()
+ except (ValueError,TypeError): return False
 def user(a):
  if not a or not a.startswith('Bearer '): raise HTTPException(401,'Please log in')
- c=conn(); r=c.execute('SELECT user_id FROM sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
- if not r: raise HTTPException(401,'Session expired')
+ c=conn(); r=c.execute('SELECT user_id,created_at FROM sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
+ if not r or not session_valid(r['created_at'],SESSION_HOURS): raise HTTPException(401,'Session expired')
  return r['user_id']
 def club(a):
  if not a or not a.startswith('Bearer '): raise HTTPException(401,'Club login required')
- c=conn(); r=c.execute('SELECT club_id FROM club_sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
- if not r: raise HTTPException(401,'Club session expired')
+ c=conn(); r=c.execute('SELECT club_id,created_at FROM club_sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
+ if not r or not session_valid(r['created_at'],CLUB_SESSION_HOURS): raise HTTPException(401,'Club session expired')
  return r['club_id']
 def ensure_col(c,table,name,definition):
  cols=[r['name'] for r in c.execute(f'PRAGMA table_info({table})').fetchall()]
@@ -79,9 +84,19 @@ def club_register(d:ClubRegister):
  c.close(); return {'token':t,'club_id':cid}
 @router.post('/api/clubs/login')
 def club_login(d:ClubLogin):
- c=conn(); x=c.execute('SELECT * FROM clubs WHERE email=?',(d.email.lower().strip(),)).fetchone()
- if not x or not vp(d.password,x['password_hash']): c.close(); raise HTTPException(401,'Incorrect email or password')
+ from main import login_allowed, login_failure, login_success
+ account=d.email.lower().strip()
+ login_allowed('club',account)
+ c=conn(); x=c.execute('SELECT * FROM clubs WHERE email=?',(account,)).fetchone()
+ if not x or not vp(d.password,x['password_hash']):
+  c.close(); login_failure('club',account); raise HTTPException(401,'Incorrect email or password')
+ login_success('club',account)
  t=secrets.token_urlsafe(32); c.execute('INSERT INTO club_sessions VALUES(?,?,?)',(t,x['id'],now())); c.commit(); c.close(); return {'token':t,'club_id':x['id']}
+@router.post('/api/clubs/logout')
+def club_logout(authorization:Optional[str]=Header(None)):
+ club(authorization)
+ c=conn(); c.execute('DELETE FROM club_sessions WHERE token=?',(authorization[7:],)); c.commit(); c.close()
+ return {'ok':True}
 @router.get('/api/clubs/me')
 def club_me(authorization:Optional[str]=Header(None)):
  cid=club(authorization); c=conn(); x=c.execute('SELECT id,name,location,email,website,description,logo,hero_image,contact_name,tagline,verified FROM clubs WHERE id=?',(cid,)).fetchone(); c.close(); return dict(x)
