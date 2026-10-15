@@ -76,3 +76,40 @@ def test_club_login_lockout_and_logout(tmp_path, monkeypatch):
         for i in range(5):
             client.post("/api/clubs/login",json={"email":club["email"],"password":"wrong"})
         assert client.post("/api/clubs/login",json={"email":club["email"],"password":club["password"]}).status_code==429
+
+def test_photo_replacement_and_invalid_upload(tmp_path,monkeypatch):
+    monkeypatch.setenv("DATA_DIR",str(tmp_path))
+    app=fresh_app()
+    with TestClient(app) as client:
+        reg=client.post("/api/register",json={"email":"photo@example.test","password":"test-password-123","name":"Photo Tester","age":30,"location":"Dublin"})
+        assert reg.status_code==200,reg.text
+        auth={"Authorization":"Bearer "+reg.json()["token"]}
+        assert client.post("/api/me/photo",headers={**auth,"Content-Type":"image/png"},data=b"not an image").status_code==415
+        image=Image.new("RGB",(16,16),"blue")
+        stream=io.BytesIO();image.save(stream,format="PNG")
+        first=client.post("/api/me/photo",headers={**auth,"Content-Type":"image/png"},data=stream.getvalue())
+        assert first.status_code==200,first.text
+        old=first.json()["photo"]
+        second=client.post("/api/me/photo",headers={**auth,"Content-Type":"image/png"},data=stream.getvalue())
+        assert second.status_code==200,second.text
+        assert client.get(old,headers=auth).status_code==404
+        assert client.get(second.json()["photo"],headers=auth).status_code==200
+        assert client.put("/api/me",headers=auth,json={"photo":old}).status_code==200
+        assert client.get("/api/me",headers=auth).json()["photo"]==second.json()["photo"]
+
+def test_user_login_and_expired_session(tmp_path,monkeypatch):
+    monkeypatch.setenv("DATA_DIR",str(tmp_path))
+    app=fresh_app()
+    with TestClient(app) as client:
+        reg=client.post("/api/register",json={"email":"expiry@example.test","password":"test-password-123","name":"Expiry Tester","age":30,"location":"Dublin"})
+        assert reg.status_code==200,reg.text
+        auth={"Authorization":"Bearer "+reg.json()["token"]}
+        assert client.get("/api/me",headers=auth).status_code==200
+        import sqlite3
+        db=sqlite3.connect(str(tmp_path/"lovebirdies.db"))
+        db.execute("UPDATE sessions SET created_at='2000-01-01T00:00:00' WHERE token=?",(reg.json()["token"],))
+        db.commit();db.close()
+        assert client.get("/api/me",headers=auth).status_code==401
+        login=client.post("/api/login",json={"email":"expiry@example.test","password":"test-password-123"})
+        assert login.status_code==200,login.text
+        assert client.get("/api/me",headers={"Authorization":"Bearer "+login.json()["token"]}).status_code==200
