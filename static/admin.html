@@ -13,7 +13,7 @@
   <header class="admin-header"><div class="brand"><span>♥</span>LoveBirdies <small>Admin</small></div><a href="/" class="back-link">← Back to site</a></header>
   <main>
     <section id="loginPanel" class="login-wrap">
-      <form id="adminLoginForm" class="login-card"><div class="eyebrow">Private administration</div><h1>Admin login</h1><p>Use the credentials configured securely in Railway.</p><label>Email<input id="adminEmail" type="email" autocomplete="username" required></label><label>Password<input id="adminPassword" type="password" autocomplete="current-password" required></label><button class="primary" type="submit">Log in</button><p id="loginError" class="error"></p></form>
+      <form id="adminLoginForm" class="login-card"><div class="eyebrow">Private administration</div><h1>Admin login</h1><p>Use the credentials configured securely in Railway.</p><label>Email<input id="adminEmail" type="email" autocomplete="username" required></label><label>Password<input id="adminPassword" type="password" autocomplete="current-password" required></label><label>Authenticator code<input id="adminOtp" type="text" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label><button class="primary" type="submit">Log in</button><p id="loginError" class="error"></p></form>
     </section>
     <section id="dashboard" class="dashboard hidden">
       <div class="dashboard-top"><div><div class="eyebrow">Overview</div><h1>LoveBirdies admin</h1><p>Private account, activity and safety overview.</p></div><button id="adminLogout" class="secondary">Log out</button></div>
