@@ -7,6 +7,7 @@ import sqlite3, hashlib, secrets, os, math
 from datetime import datetime, timedelta
 from photo_uploads import router as photo_router
 from email_notifications import notify_like, notify_match, notify_message
+import pyotp
 
 BASE=os.path.dirname(__file__)
 DATA_DIR=os.environ.get('DATA_DIR',BASE)
@@ -33,6 +34,7 @@ def add_column(c,name,definition):
 def init_db():
  c=conn(); c.executescript('''CREATE TABLE IF NOT EXISTS clubs(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,name TEXT NOT NULL,location TEXT NOT NULL,website TEXT DEFAULT '',description TEXT DEFAULT '',tagline TEXT DEFAULT '',contact_name TEXT DEFAULT '',logo TEXT DEFAULT '',hero_image TEXT DEFAULT '',verified INTEGER DEFAULT 0,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS club_sessions(token TEXT PRIMARY KEY,club_id INTEGER NOT NULL,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS golf_events(id INTEGER PRIMARY KEY AUTOINCREMENT,club_id INTEGER NOT NULL,title TEXT NOT NULL,event_date TEXT NOT NULL,event_time TEXT NOT NULL,format TEXT DEFAULT '',price REAL DEFAULT 0,capacity INTEGER DEFAULT 24,description TEXT DEFAULT '',status TEXT DEFAULT 'published',created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS event_bookings(event_id INTEGER NOT NULL,user_id INTEGER NOT NULL,created_at TEXT NOT NULL,UNIQUE(event_id,user_id)); CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,name TEXT NOT NULL,age INTEGER NOT NULL,location TEXT NOT NULL,handicap REAL,gender TEXT DEFAULT '',interested_in TEXT DEFAULT '',looking_for TEXT DEFAULT 'Dating and seeing where it goes',bio TEXT DEFAULT '',golf_style TEXT DEFAULT 'Social golfer',home_club TEXT DEFAULT '',photo TEXT DEFAULT '',verified INTEGER DEFAULT 0,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS admin_sessions(token TEXT PRIMARY KEY,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS likes(liker_id INTEGER NOT NULL,liked_id INTEGER NOT NULL,created_at TEXT NOT NULL,UNIQUE(liker_id,liked_id)); CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,sender_id INTEGER NOT NULL,receiver_id INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL); CREATE TABLE IF NOT EXISTS blocks(blocker_id INTEGER NOT NULL,blocked_id INTEGER NOT NULL,created_at TEXT NOT NULL,UNIQUE(blocker_id,blocked_id)); CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY AUTOINCREMENT,reporter_id INTEGER NOT NULL,reported_id INTEGER NOT NULL,reason TEXT NOT NULL,details TEXT DEFAULT '',status TEXT DEFAULT 'open',created_at TEXT NOT NULL);''')
  for n,d in [('min_age','INTEGER DEFAULT 18'),('max_age','INTEGER DEFAULT 80'),('search_radius','INTEGER DEFAULT 50'),('onboarding_complete','INTEGER DEFAULT 0'),('latitude','REAL'),('longitude','REAL')]: add_column(c,n,d)
+ c.execute('CREATE TABLE IF NOT EXISTS login_attempts (scope TEXT NOT NULL, account TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0, first_at TEXT NOT NULL, locked_until TEXT, PRIMARY KEY(scope,account))')
  c.commit(); c.close()
 
 def remove_old_demo_accounts():
@@ -46,13 +48,28 @@ init_db(); remove_old_demo_accounts()
 class Register(BaseModel):
  email:str; password:str; name:str; age:int; location:str; handicap:Optional[float]=None; gender:str=''; interested_in:str=''; looking_for:str='Dating and seeing where it goes'
 class Login(BaseModel): email:str; password:str
-class AdminLogin(BaseModel): email:str; password:str
+class AdminLogin(BaseModel): email:str; password:str; otp:Optional[str]=None
 class ProfileUpdate(BaseModel):
  name:Optional[str]=None; age:Optional[int]=None; location:Optional[str]=None; handicap:Optional[float]=None; gender:Optional[str]=None; interested_in:Optional[str]=None; looking_for:Optional[str]=None; bio:Optional[str]=None; golf_style:Optional[str]=None; home_club:Optional[str]=None; min_age:Optional[int]=None; max_age:Optional[int]=None; search_radius:Optional[int]=None; onboarding_complete:Optional[int]=None; latitude:Optional[float]=None; longitude:Optional[float]=None
 class MessageIn(BaseModel): receiver_id:int; body:str
 class ReportIn(BaseModel): reported_id:int; reason:str; details:str=''
 class DeleteAccountIn(BaseModel): password:str
 class ReportStatusIn(BaseModel): status:str
+
+def login_allowed(scope, account):
+ c=conn(); r=c.execute('SELECT locked_until FROM login_attempts WHERE scope=? AND account=?',(scope,account)).fetchone(); c.close()
+ if r and r['locked_until'] and datetime.fromisoformat(r['locked_until'])>datetime.utcnow(): raise HTTPException(429,'Too many attempts. Try again later.')
+
+def login_failure(scope,account):
+ now=datetime.utcnow(); c=conn(); c.execute('BEGIN IMMEDIATE')
+ r=c.execute('SELECT failures,first_at FROM login_attempts WHERE scope=? AND account=?',(scope,account)).fetchone()
+ count=(r['failures']+1) if r and now-datetime.fromisoformat(r['first_at'])<timedelta(minutes=15) else 1
+ first=r['first_at'] if r and count>1 else now.isoformat()
+ locked=(now+timedelta(minutes=15)).isoformat() if count>=5 else None
+ c.execute('INSERT INTO login_attempts(scope,account,failures,first_at,locked_until) VALUES(?,?,?,?,?) ON CONFLICT(scope,account) DO UPDATE SET failures=excluded.failures,first_at=excluded.first_at,locked_until=excluded.locked_until',(scope,account,count,first,locked)); c.commit();c.close()
+
+def login_success(scope,account):
+ c=conn();c.execute('DELETE FROM login_attempts WHERE scope=? AND account=?',(scope,account));c.commit();c.close()
 
 SESSION_HOURS = max(1, int(os.environ.get('SESSION_HOURS', '168')))
 ADMIN_SESSION_HOURS = max(1, int(os.environ.get('ADMIN_SESSION_HOURS', '8')))
@@ -104,7 +121,13 @@ def admin_page(): return FileResponse(os.path.join(BASE,'static','admin.html'))
 def admin_login(d:AdminLogin):
  e=os.environ.get('ADMIN_EMAIL','').strip().lower(); p=os.environ.get('ADMIN_PASSWORD','')
  if not e or not p: raise HTTPException(503,'Admin access has not been configured')
- if not(secrets.compare_digest(d.email.strip().lower(),e) and secrets.compare_digest(d.password,p)): raise HTTPException(401,'Incorrect admin email or password')
+ mfa=os.environ.get('ADMIN_TOTP_SECRET','').strip()
+ if not mfa: raise HTTPException(503,'Admin MFA must be configured before login')
+ account=d.email.strip().lower()
+ login_allowed('admin',account)
+ if not(secrets.compare_digest(account,e) and secrets.compare_digest(d.password,p) and bool(d.otp) and pyotp.TOTP(mfa).verify(d.otp,valid_window=1)):
+  login_failure('admin',account); raise HTTPException(401,'Incorrect admin credentials or verification code')
+ login_success('admin',account)
  t=secrets.token_urlsafe(40); c=conn(); c.execute('INSERT INTO admin_sessions VALUES(?,?)',(t,datetime.utcnow().isoformat())); c.commit(); c.close(); return {'token':t}
 
 @app.post('/api/admin/logout')
@@ -164,8 +187,12 @@ def register(d:Register):
 
 @app.post('/api/login')
 def login(d:Login):
- c=conn(); u=c.execute('SELECT * FROM users WHERE email=?',(d.email.lower().strip(),)).fetchone()
- if not u or not verify_password(d.password,u['password_hash']): c.close(); raise HTTPException(401,'Incorrect email or password')
+ account=d.email.lower().strip()
+ login_allowed('user',account)
+ c=conn(); u=c.execute('SELECT * FROM users WHERE email=?',(account,)).fetchone()
+ if not u or not verify_password(d.password,u['password_hash']):
+  c.close(); login_failure('user',account); raise HTTPException(401,'Incorrect email or password')
+ login_success('user',account)
  t=secrets.token_urlsafe(32); c.execute('INSERT INTO sessions VALUES(?,?,?)',(t,u['id'],datetime.utcnow().isoformat())); c.commit(); c.close(); return {'token':t,'user_id':u['id']}
 
 @app.get('/api/me')
