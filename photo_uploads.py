@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from typing import Optional
-import os, secrets, sqlite3
+import os, secrets, sqlite3, io
+from PIL import Image, UnidentifiedImageError
 from golf_features import router as golf_router
 
 router = APIRouter()
@@ -30,6 +31,13 @@ async def upload_profile_photo(request: Request, authorization: Optional[str] = 
     body = await request.body()
     if not body: raise HTTPException(400, 'No image was uploaded')
     if len(body) > MAX_BYTES: raise HTTPException(413, 'Photo must be 5 MB or smaller')
+    try:
+        img = Image.open(io.BytesIO(body))
+        img.verify()
+        if img.format not in ('JPEG', 'PNG', 'WEBP'):
+            raise ValueError('Unsupported image format')
+    except (UnidentifiedImageError, ValueError, OSError):
+        raise HTTPException(415, 'Invalid image file')
     filename = f'user-{uid}-{secrets.token_hex(8)}{ALLOWED[content_type]}'; path = os.path.join(UPLOAD_DIR, filename)
     with open(path, 'wb') as f: f.write(body)
     photo_url = f'/uploads/{filename}'; c = sqlite3.connect(DB); old = c.execute('SELECT photo FROM users WHERE id=?', (uid,)).fetchone(); c.execute('UPDATE users SET photo=? WHERE id=?', (photo_url, uid)); c.commit(); c.close()
