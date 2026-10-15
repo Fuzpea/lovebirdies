@@ -2,6 +2,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from typing import Optional
 import os, secrets, sqlite3, io
+from datetime import datetime, timedelta
 from PIL import Image, UnidentifiedImageError
 from golf_features import router as golf_router
 
@@ -17,8 +18,13 @@ MAX_BYTES = 5 * 1024 * 1024
 
 def user_from_token(authorization: Optional[str]):
     if not authorization or not authorization.startswith('Bearer '): raise HTTPException(401, 'Please log in')
-    token = authorization[7:]; c = sqlite3.connect(DB); row = c.execute('SELECT user_id FROM sessions WHERE token=?', (token,)).fetchone(); c.close()
+    token = authorization[7:]; c = sqlite3.connect(DB); row = c.execute('SELECT user_id,created_at FROM sessions WHERE token=?', (token,)).fetchone(); c.close()
     if not row: raise HTTPException(401, 'Session expired')
+    try:
+        if datetime.fromisoformat(row[1]) + timedelta(hours=max(1,int(os.environ.get('SESSION_HOURS','168')))) <= datetime.utcnow():
+            raise HTTPException(401, 'Session expired')
+    except (ValueError, TypeError):
+        raise HTTPException(401, 'Session expired')
     return row[0]
 
 @router.get('/clubs')
@@ -49,9 +55,27 @@ async def upload_profile_photo(request: Request, authorization: Optional[str] = 
     return {'photo': photo_url}
 
 @router.get('/uploads/{filename}')
-def uploaded_photo(filename: str):
+def uploaded_photo(filename: str, authorization: Optional[str] = Header(None)):
+    """Only the owner or a non-blocked, discoverable member may retrieve a profile photo."""
+    uid = user_from_token(authorization)
     safe = os.path.basename(filename)
     if safe != filename: raise HTTPException(404)
+    c = sqlite3.connect(DB)
+    c.row_factory = sqlite3.Row
+    owner = c.execute('SELECT id,age,gender,interested_in,photo,min_age,max_age FROM users WHERE photo=?', ('/uploads/'+safe,)).fetchone()
+    viewer = c.execute('SELECT id,age,gender,interested_in,min_age,max_age FROM users WHERE id=?', (uid,)).fetchone()
+    if not owner or not viewer:
+        c.close(); raise HTTPException(404, 'Photo not found')
+    if owner['id'] != uid:
+        blocked = c.execute('SELECT 1 FROM blocks WHERE (blocker_id=? AND blocked_id=?) OR (blocker_id=? AND blocked_id=?)', (uid,owner['id'],owner['id'],uid)).fetchone()
+        mutual = c.execute('SELECT 1 FROM likes a JOIN likes b ON b.liker_id=a.liked_id AND b.liked_id=a.liker_id WHERE a.liker_id=? AND a.liked_id=?', (uid,owner['id'])).fetchone()
+        def interested(wanted, gender):
+            return not wanted or wanted == 'Everyone' or (wanted == 'Men' and gender == 'Man') or (wanted == 'Women' and gender == 'Woman') or wanted == gender
+        compatible = (owner['age'] >= (viewer['min_age'] or 18) and owner['age'] <= (viewer['max_age'] or 99) and viewer['age'] >= (owner['min_age'] or 18) and viewer['age'] <= (owner['max_age'] or 99) and interested(viewer['interested_in'],owner['gender']) and interested(owner['interested_in'],viewer['gender']))
+        if blocked or not (mutual or compatible):
+            c.close(); raise HTTPException(404, 'Photo not found')
+    c.close()
     path = os.path.join(UPLOAD_DIR, safe)
     if not os.path.isfile(path): raise HTTPException(404, 'Photo not found')
-    return FileResponse(path)
+    response = FileResponse(path, headers={'Cache-Control':'private, no-store', 'X-Content-Type-Options':'nosniff'})
+    return response
