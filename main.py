@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional
 import sqlite3, hashlib, secrets, os, math
-from datetime import datetime
+from datetime import datetime, timedelta
 from photo_uploads import router as photo_router
 from email_notifications import notify_like, notify_match, notify_message
 
@@ -54,16 +54,25 @@ class ReportIn(BaseModel): reported_id:int; reason:str; details:str=''
 class DeleteAccountIn(BaseModel): password:str
 class ReportStatusIn(BaseModel): status:str
 
+SESSION_HOURS = max(1, int(os.environ.get('SESSION_HOURS', '168')))
+ADMIN_SESSION_HOURS = max(1, int(os.environ.get('ADMIN_SESSION_HOURS', '8')))
+
+def valid_session(created_at, hours):
+ try:
+  return datetime.fromisoformat(created_at) + timedelta(hours=hours) > datetime.utcnow()
+ except (ValueError, TypeError):
+  return False
+
 def auth_user(a):
  if not a or not a.startswith('Bearer '): raise HTTPException(401,'Please log in')
- c=conn(); r=c.execute('SELECT user_id FROM sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
- if not r: raise HTTPException(401,'Session expired')
+ c=conn(); r=c.execute('SELECT user_id,created_at FROM sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
+ if not r or not valid_session(r['created_at'], SESSION_HOURS): raise HTTPException(401,'Session expired')
  return r['user_id']
 
 def auth_admin(a):
  if not a or not a.startswith('Bearer '): raise HTTPException(401,'Admin login required')
- c=conn(); r=c.execute('SELECT token FROM admin_sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
- if not r: raise HTTPException(401,'Admin session expired')
+ c=conn(); r=c.execute('SELECT token,created_at FROM admin_sessions WHERE token=?',(a[7:],)).fetchone(); c.close()
+ if not r or not valid_session(r['created_at'], ADMIN_SESSION_HOURS): raise HTTPException(401,'Admin session expired')
 
 def public_user(r,distance=None):
  out={k:r[k] for k in ['id','name','age','location','handicap','gender','interested_in','looking_for','bio','golf_style','home_club','photo','verified','min_age','max_age','search_radius','onboarding_complete']}
@@ -97,6 +106,18 @@ def admin_login(d:AdminLogin):
  if not e or not p: raise HTTPException(503,'Admin access has not been configured')
  if not(secrets.compare_digest(d.email.strip().lower(),e) and secrets.compare_digest(d.password,p)): raise HTTPException(401,'Incorrect admin email or password')
  t=secrets.token_urlsafe(40); c=conn(); c.execute('INSERT INTO admin_sessions VALUES(?,?)',(t,datetime.utcnow().isoformat())); c.commit(); c.close(); return {'token':t}
+
+@app.post('/api/admin/logout')
+def admin_logout(authorization:Optional[str]=Header(None)):
+ auth_admin(authorization)
+ c=conn(); c.execute('DELETE FROM admin_sessions WHERE token=?',(authorization[7:],)); c.commit(); c.close()
+ return {'ok':True}
+
+@app.post('/api/logout')
+def logout(authorization:Optional[str]=Header(None)):
+ auth_user(authorization)
+ c=conn(); c.execute('DELETE FROM sessions WHERE token=?',(authorization[7:],)); c.commit(); c.close()
+ return {'ok':True}
 
 @app.get('/api/admin/stats')
 def admin_stats(authorization:Optional[str]=Header(None)):
@@ -154,6 +175,7 @@ def me(authorization:Optional[str]=Header(None)):
 @app.put('/api/me')
 def update_me(d:ProfileUpdate,authorization:Optional[str]=Header(None)):
  uid=auth_user(authorization); data=d.model_dump(exclude_unset=True)
+ if 'age' in data and data['age'] is not None and not 18<=data['age']<=120: raise HTTPException(400,'LoveBirdies is for adults aged 18+ only')
  if 'min_age' in data and data['min_age'] is not None and not 18<=data['min_age']<=99: raise HTTPException(400,'Minimum age must be between 18 and 99')
  if 'max_age' in data and data['max_age'] is not None and not 18<=data['max_age']<=99: raise HTTPException(400,'Maximum age must be between 18 and 99')
  if data.get('latitude') is not None and not -90<=data['latitude']<=90: raise HTTPException(400,'Invalid latitude')
