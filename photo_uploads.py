@@ -34,14 +34,15 @@ def clubs_page(): return FileResponse(os.path.join(BASE,'static','clubs.html'))
 async def upload_profile_photo(request: Request, authorization: Optional[str] = Header(None)):
     uid = user_from_token(authorization); content_type = request.headers.get('content-type', '').split(';', 1)[0].lower()
     if content_type not in ALLOWED: raise HTTPException(415, 'Please upload a JPG, PNG or WebP image')
+    if request.headers.get('content-length') and int(request.headers['content-length']) > MAX_BYTES: raise HTTPException(413, 'Photo must be 5 MB or smaller')
     body = await request.body()
     if not body: raise HTTPException(400, 'No image was uploaded')
     if len(body) > MAX_BYTES: raise HTTPException(413, 'Photo must be 5 MB or smaller')
     try:
         img = Image.open(io.BytesIO(body))
         img.verify()
-        if img.format not in ('JPEG', 'PNG', 'WEBP'):
-            raise ValueError('Unsupported image format')
+        if img.format != {'image/jpeg':'JPEG','image/png':'PNG','image/webp':'WEBP'}[content_type]:
+            raise ValueError('Image type mismatch')
     except (UnidentifiedImageError, ValueError, OSError):
         raise HTTPException(415, 'Invalid image file')
     try:
