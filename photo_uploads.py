@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse
 from typing import Optional
 import os, secrets, sqlite3, io
 from datetime import datetime, timedelta
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, UnidentifiedImageError, ImageOps
 from golf_features import router as golf_router
 
 router = APIRouter()
@@ -44,6 +44,18 @@ async def upload_profile_photo(request: Request, authorization: Optional[str] = 
             raise ValueError('Unsupported image format')
     except (UnidentifiedImageError, ValueError, OSError):
         raise HTTPException(415, 'Invalid image file')
+    try:
+        img = Image.open(io.BytesIO(body))
+        img = ImageOps.exif_transpose(img)
+        if img.width * img.height > 25_000_000: raise ValueError('Image too large')
+        img.thumbnail((2048, 2048))
+        if content_type == 'image/jpeg':
+            img = img.convert('RGB')
+        output = io.BytesIO()
+        img.save(output, format={'image/jpeg':'JPEG','image/png':'PNG','image/webp':'WEBP'}[content_type])
+        body = output.getvalue()
+    except (UnidentifiedImageError, ValueError, OSError, Image.DecompressionBombError):
+        raise HTTPException(415, 'Invalid or oversized image')
     filename = f'user-{uid}-{secrets.token_hex(8)}{ALLOWED[content_type]}'; path = os.path.join(UPLOAD_DIR, filename)
     with open(path, 'wb') as f: f.write(body)
     photo_url = f'/uploads/{filename}'; c = sqlite3.connect(DB); old = c.execute('SELECT photo FROM users WHERE id=?', (uid,)).fetchone(); c.execute('UPDATE users SET photo=? WHERE id=?', (photo_url, uid)); c.commit(); c.close()
